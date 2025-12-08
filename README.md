@@ -1,0 +1,2 @@
+# Mines
+Fake gambling game
