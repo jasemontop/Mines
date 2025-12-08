@@ -14,6 +14,83 @@ const dailyBtn = document.getElementById("dailyBtn");
 // Note: old footer Restart button was removed — modal provides Restart now
 const flashOverlay = document.getElementById("flashOverlay");
 const floatingText = document.getElementById("floatingText");
+const notificationContainer = document.getElementById("notificationContainer");
+
+// Notification system
+const NOTIF_KEY = "mines_notifications_v1";
+
+function addNotificationForUser(username, message, type = 'info'){
+  try{
+    const notifs = JSON.parse(localStorage.getItem(NOTIF_KEY) || '{}');
+    if(!notifs[username]) notifs[username] = [];
+    notifs[username].unshift({ message, type, timestamp: Date.now(), unread: true });
+    // keep last 50 notifications per user
+    notifs[username] = notifs[username].slice(0, 50);
+    localStorage.setItem(NOTIF_KEY, JSON.stringify(notifs));
+  }catch(e){}
+}
+
+function showNotification(message, type = 'info'){
+  const notif = document.createElement('div');
+  notif.className = `notification ${type}`;
+  notif.textContent = message;
+  notificationContainer.appendChild(notif);
+  
+  // Remove after animation completes (5 seconds total)
+  setTimeout(()=> notif.remove(), 5000);
+}
+
+function checkAndShowNotifications(){
+  if(!currentUser) return;
+  try{
+    const notifs = JSON.parse(localStorage.getItem(NOTIF_KEY) || '{}');
+    if(notifs[currentUser]){
+      const unread = notifs[currentUser].filter(n => n.unread);
+      unread.forEach(n => {
+        showNotification(n.message, n.type);
+        n.unread = false; // mark as read
+      });
+      if(unread.length > 0){
+        localStorage.setItem(NOTIF_KEY, JSON.stringify(notifs));
+      }
+    }
+  }catch(e){}
+}
+
+// Check for ban status
+function isUserBanned(username){
+  const users = loadUsers();
+  if(!users[username]) return false;
+  const banUntil = users[username].banUntil;
+  if(!banUntil) return false;
+  return Date.now() < banUntil;
+}
+
+function getBanTimeRemaining(username){
+  const users = loadUsers();
+  if(!users[username]) return 0;
+  const banUntil = users[username].banUntil;
+  if(!banUntil) return 0;
+  const remaining = banUntil - Date.now();
+  return remaining > 0 ? Math.ceil(remaining / 60000) : 0; // minutes
+}
+
+function checkForceLogout(){
+  if(!currentUser) return;
+  const users = loadUsers();
+  if(!users[currentUser]) return;
+  const forceLogout = users[currentUser].forceLogout;
+  if(forceLogout && forceLogout > (Date.now() - 60000)){ // within last minute
+    // User was force logged out
+    showNotification('You have been logged out by an administrator', 'warning');
+    setTimeout(()=>{
+      currentUser = null;
+      localStorage.removeItem(CURR_USER_KEY);
+      renderUserBadge();
+      showAuthModal(true, 'login');
+    }, 1000);
+  }
+}
 
 // Lost modal (created once) — use CSS classes for styling/animation
 const lostModal = document.createElement("div");
@@ -170,12 +247,21 @@ authSubmit.onclick = async ()=>{
     if(!users[username]) return showAuthError('User not found');
     const h = await hashPassword(password);
     if(users[username].pw !== h) return showAuthError('Incorrect password');
+    
+    // Check if user is banned
+    if(isUserBanned(username)){
+      const mins = getBanTimeRemaining(username);
+      return showAuthError(`Account is banned. ${mins} minute(s) remaining.`);
+    }
+    
     currentUser = username; localStorage.setItem(CURR_USER_KEY, currentUser);
     // load account balance and stats
     balance = users[username].balance || 1000;
     saveBalance();
     showAuthError(''); showAuthModal(false);
     renderUserBadge();
+    // Check for notifications
+    checkAndShowNotifications();
   }
 };
 
@@ -185,7 +271,39 @@ if(!currentUser){
   setTimeout(()=> showAuthModal(true,'login'), 80);
 } else {
   renderUserBadge();
+  // Check if user is banned
+  if(isUserBanned(currentUser)){
+    const mins = getBanTimeRemaining(currentUser);
+    showNotification(`Your account is banned. ${mins} minute(s) remaining.`, 'warning');
+    setTimeout(()=>{
+      currentUser = null;
+      localStorage.removeItem(CURR_USER_KEY);
+      renderUserBadge();
+      showAuthModal(true, 'login');
+    }, 2000);
+  } else {
+    // Check for force logout
+    checkForceLogout();
+    // Check for notifications
+    checkAndShowNotifications();
+  }
 }
+
+// Periodically check for bans and force logout (every 10 seconds)
+setInterval(()=>{
+  if(currentUser){
+    if(isUserBanned(currentUser)){
+      const mins = getBanTimeRemaining(currentUser);
+      showNotification(`Your account has been banned. ${mins} minute(s) remaining.`, 'warning');
+      currentUser = null;
+      localStorage.removeItem(CURR_USER_KEY);
+      renderUserBadge();
+      showAuthModal(true, 'login');
+    } else {
+      checkForceLogout();
+    }
+  }
+}, 10000);
 
 // --- Analytics modal elements ---
   const analyticsModal = document.getElementById('analyticsModal');
@@ -282,9 +400,16 @@ adminUserSelect.onchange = ()=>{
 adminSetBalance.onclick = ()=>{
   const sel = adminUserSelect.value; const v = parseInt(adminBalanceInput.value) || 0;
   const users = loadUsers(); users[sel] = users[sel] || {};
+  const oldBalance = users[sel].balance || 0;
   users[sel].balance = v; saveUsers(users);
   appendAudit({by: currentUser, at: Date.now(), action: `set balance ${sel} -> ${v}`} );
+  
+  // Send notification to user
+  addNotificationForUser(sel, `Admin ${currentUser} has set your balance to ${v} 💰 (was ${oldBalance})`, 'info');
+  
+  // If it's the current user, update their live balance immediately
   if(sel === currentUser) { balance = v; saveBalance(); }
+  
   showFloatingText(`Set ${sel} = ${v}`,'rgba(46,204,113,0.9)');
 };
 
@@ -292,12 +417,20 @@ adminBanBtn.onclick = ()=>{
   const sel = adminUserSelect.value; const mins = Math.max(1, parseInt(adminBanMinutes.value)||0);
   const users = loadUsers(); users[sel] = users[sel] || {}; users[sel].banUntil = Date.now() + mins*60000; saveUsers(users);
   appendAudit({by: currentUser, at: Date.now(), action: `banned ${sel} for ${mins}m`});
+  
+  // Send notification to user
+  addNotificationForUser(sel, `You have been banned by admin ${currentUser} for ${mins} minute(s). 🚫`, 'warning');
+  
   showFloatingText(`Banned ${sel} ${mins}m`,'rgba(255,92,96,0.9)');
 };
 
 adminUnbanBtn.onclick = ()=>{
   const sel = adminUserSelect.value; const users = loadUsers(); users[sel] = users[sel] || {}; delete users[sel].banUntil; saveUsers(users);
   appendAudit({by: currentUser, at: Date.now(), action: `unbanned ${sel}`});
+  
+  // Send notification to user
+  addNotificationForUser(sel, `You have been unbanned by admin ${currentUser}. Welcome back! ✅`, 'success');
+  
   showFloatingText(`Unbanned ${sel}`,'rgba(46,204,113,0.9)');
 };
 
@@ -308,6 +441,10 @@ adminResetBtn.onclick = async ()=>{
   const h = await hashPassword(pwd);
   users[sel].pw = h; saveUsers(users);
   appendAudit({by: currentUser, at: Date.now(), action: `reset password for ${sel}`});
+  
+  // Send notification to user
+  addNotificationForUser(sel, `Admin ${currentUser} has reset your password. Your new temporary password is: ${pwd}`, 'warning');
+  
   showFloatingText(`Reset pwd for ${sel}`,'rgba(46,204,113,0.9)');
 };
 
@@ -315,6 +452,10 @@ adminForceLogoutBtn.onclick = ()=>{
   const sel = adminUserSelect.value; const users = loadUsers(); users[sel] = users[sel] || {};
   users[sel].forceLogout = Date.now(); saveUsers(users);
   appendAudit({by: currentUser, at: Date.now(), action: `force logout ${sel}`});
+  
+  // Send notification to user
+  addNotificationForUser(sel, `You have been logged out by admin ${currentUser}. 🚪`, 'warning');
+  
   showFloatingText(`Force logout ${sel}`,'rgba(46,204,113,0.9)');
   // if it's current user locally, log out immediately
   if(sel === currentUser){ currentUser = null; localStorage.removeItem(CURR_USER_KEY); renderUserBadge(); showAuthModal(true,'login'); }
@@ -457,6 +598,15 @@ generateGrid();
 function firstClickStart(cell){
   if(!inRound){
     if(gameOver){ showFloatingText("Round over — press Restart","red"); return; }
+    
+    // Check if user is banned before allowing bet
+    if(currentUser && isUserBanned(currentUser)){
+      const mins = getBanTimeRemaining(currentUser);
+      showFloatingText(`Account banned: ${mins}m remaining`,"red");
+      showNotification(`Your account is banned. ${mins} minute(s) remaining.`, 'warning');
+      return;
+    }
+    
     minesCount=parseInt(minesInput.value); if(minesCount<1) minesCount=1; if(minesCount>24) minesCount=24;
     betAmount=parseInt(betInput.value); if(betAmount<1) betAmount=1;
     if(betAmount>balance){ showFloatingText("Not enough balance!","red"); return; }
