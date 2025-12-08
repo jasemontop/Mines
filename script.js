@@ -803,3 +803,41 @@ updateDailyButton();
 setInterval(updateDailyButton, 1000);
 
 // Confetti removed — no createConfetti implementation
+
+// 🔥 REAL-TIME UPDATES (no refresh needed)
+window.addEventListener("storage", (e) => {
+    if (!currentUser) return;
+
+    // --- Notifications ---
+    if (e.key === NOTIF_KEY) {
+        checkAndShowNotifications();
+    }
+
+    // --- User data (bans, balance, forced logout) ---
+    if (e.key === USERS_KEY) {
+        const users = loadUsers();
+        const u = users[currentUser];
+        if (!u) return;
+
+        // Balance changed
+        balance = u.balance || balance;
+        balanceEl.textContent = balance;
+
+        // Forced logout
+        if (u.forceLogout && u.forceLogout > (Date.now() - 30000)) {
+            showNotification("You were logged out by an admin", "warning");
+            setTimeout(() => {
+                currentUser = null;
+                localStorage.removeItem(CURR_USER_KEY);
+                renderUserBadge();
+                showAuthModal(true, "login");
+            }, 800);
+        }
+
+        // Ban applied
+        if (isUserBanned(currentUser)) {
+            const mins = getBanTimeRemaining(currentUser);
+            showNotification(`You are banned. ${mins}m left.`, "warning");
+        }
+    }
+});
