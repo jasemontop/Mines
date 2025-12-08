@@ -130,3 +130,11 @@ body{
 /* Analytics uses same modal styles but tweak body rows */
 .auth-box .auth-field > div{padding:8px 10px; border-radius:8px; background:linear-gradient(180deg,#061420,#051218); margin-top:6px; color:#dffaff}
 .auth-box .auth-field{margin-bottom:10px}
+
+/* Notification system */
+.notification-container{position:fixed; top:80px; right:20px; z-index:10030; display:flex; flex-direction:column; gap:10px; max-width:360px; pointer-events:none}
+.notification{background:linear-gradient(135deg,#071827,#05202a); color:#e8faff; padding:14px 18px; border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.5); border-left:4px solid var(--accent); opacity:0; transform:translateX(400px); animation:slideIn 0.3s forwards, slideOut 0.3s 4.7s forwards; pointer-events:auto; font-size:14px; line-height:1.5}
+.notification.warning{border-left-color:var(--danger)}
+.notification.success{border-left-color:var(--success)}
+@keyframes slideIn{to{opacity:1; transform:translateX(0)}}
+@keyframes slideOut{to{opacity:0; transform:translateX(400px)}}
